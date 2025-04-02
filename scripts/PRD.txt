@@ -1,0 +1,138 @@
+File 1: Python Scraper API Specification (cohere-api.wovenweb.org)
+
+1. Purpose & Vision
+
+This document specifies the requirements for a Python-based API service designed to scrape event details from a given URL. The service will leverage a Large Language Model (LLM - specifically Google Gemini) to extract structured information (Title, Description, Start/End Datetimes, Location). It is intended to be used by the Community Event Calendar application (via a Supabase Edge Function) to pre-fill event submission forms.
+
+2. Hosting & Endpoint
+
+Target Host: cohere-api.wovenweb.org
+
+Primary Endpoint: /scrape
+
+Method: POST
+
+3. Technology Stack
+
+Language: Python (latest stable version, e.g., 3.10+)
+
+Framework: FastAPI
+
+HTTP Requests: requests (for basic fetching)
+
+Browser Automation: Playwright (for dynamic content rendering)
+
+HTML Parsing/Markdown Conversion: beautifulsoup4, html2text or markdownify (evaluate best for LLM input)
+
+LLM Interaction: Google Gemini API Client Library (google-generativeai)
+
+4. API Endpoint: /scrape
+
+Request Body (JSON):
+
+{
+  "url": "string",                     // Required. The URL of the event page to scrape.
+  "gemini_api_key": "string",          // Required. The Google Gemini API key. IMPORTANT: This should be passed securely from the calling server (Edge Function) and not exposed client-side. The API service itself should treat this as transient for the request.
+  "use_playwright": "boolean",         // Required. If true, use Playwright to render the page before scraping. If false, use basic HTTP requests.
+  "custom_instructions_text": "string" // Optional. Additional text instructions to guide the LLM for specific site structures or contexts. Can be null or empty string.
+}
+Use code with caution.
+Json
+Success Response (HTTP 200 OK):
+
+Body (JSON):
+
+{
+  "title": "string | null",          // Extracted event title. Null if not found.
+  "description": "string | null",    // Extracted event description. Null if not found.
+  "start_datetime": "string | null", // Extracted start datetime in ISO 8601 format (e.g., "2024-08-15T14:00:00Z"). Null if not found/parsable.
+  "end_datetime": "string | null",   // Extracted end datetime in ISO 8601 format. Null if not found/parsable.
+  "location": "string | null"        // Extracted location string. Null if not found.
+}
+Use code with caution.
+Json
+Error Response (HTTP 4xx or 5xx):
+
+Body (JSON):
+
+{
+  "error": "string",        // A description of the error (e.g., "Failed to fetch URL", "LLM processing error", "Data parsing failed", "Invalid input").
+  "details": "string | null" // Optional additional details about the error.
+}
+Use code with caution.
+Json
+Potential HTTP Status Codes:
+
+400 Bad Request: Invalid input (e.g., missing URL).
+
+403 Forbidden: Potentially blocked by target site.
+
+404 Not Found: Target URL does not exist.
+
+500 Internal Server Error: General processing error, LLM API error, Playwright issue.
+
+504 Gateway Timeout: Playwright or LLM request timed out.
+
+5. Core Processing Logic
+
+Receive Request: Validate the incoming JSON payload for required fields (url, gemini_api_key, use_playwright).
+
+Fetch Content:
+
+If use_playwright is true: Launch Playwright, navigate to the url, wait for potential dynamic content loading (consider a reasonable timeout), and extract the page's HTML content. Handle potential Playwright errors (timeouts, navigation errors).
+
+If use_playwright is false: Use the requests library to fetch the HTML content of the url. Handle potential HTTP errors (status codes, connection errors, timeouts).
+
+Pre-process Content:
+
+Parse the fetched HTML (e.g., using BeautifulSoup).
+
+Convert the relevant HTML content to Markdown format. Aim to simplify the structure and remove unnecessary elements (scripts, styles, navbars, footers if identifiable) to reduce token count and improve focus for the LLM. Handle potential errors during conversion.
+
+LLM Interaction:
+
+Construct a prompt for the Google Gemini API. The prompt should include:
+
+The pre-processed Markdown content.
+
+Clear instructions asking the LLM to extract the event's Title, Description, Start Datetime, End Datetime, and Location.
+
+Specify the desired output format (ideally asking the LLM to respond only with a JSON object containing these fields, with datetimes in ISO 8601 format).
+
+Include the custom_instructions_text if provided in the request, adding it as context for the LLM.
+
+Send the request to the Gemini API using the provided gemini_api_key. Handle potential API errors (authentication, rate limits, content filtering, timeouts).
+
+Parse LLM Response:
+
+Attempt to parse the LLM's response. If the LLM successfully returned JSON, parse it directly.
+
+If the response is text, attempt to extract the required fields. Implement robust parsing to handle variations and potential LLM failures to adhere to the format. Validate extracted datetimes and attempt conversion to ISO 8601 format.
+
+If parsing fails or required fields are missing, prepare an appropriate error response.
+
+Return Response:
+
+If successful, return an HTTP 200 response with the structured JSON data (title, description, start_datetime, end_datetime, location).
+
+If any step failed, return an appropriate HTTP error status code (4xx or 5xx) and a JSON error body.
+
+6. Deployment & Packaging
+
+The API should be packaged (e.g., using Docker) for deployment as a web service.
+
+The core scraping and LLM interaction logic should ideally be structured within the Python project such that it could be imported and used as a library in other Python applications if needed in the future, separating the FastAPI web layer from the core logic.
+
+7. Security Considerations
+
+The gemini_api_key is sensitive and should only be handled transiently for the duration of the request. Do not log or store it persistently within this API service. Rely on the calling service (Supabase Edge Function) for secure storage and transmission.
+
+Implement basic rate limiting if necessary to prevent abuse.
+
+8. Future Considerations (V2+)
+
+Ability to detect and return multiple distinct events from a single page URL.
+
+Functionality to identify and potentially structure recurring event information.
+
+Accepting image flyers as input in addition to URLs.
