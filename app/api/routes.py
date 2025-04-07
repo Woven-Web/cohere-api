@@ -67,32 +67,45 @@ async def scrape_website(request: ScrapeRequest, rate_limit: None = Depends(chec
     try:
         logger.info(f"Processing scrape request for URL: {request.url}")
         
+        # Check if this is a Facebook URL - we don't support those
+        if "facebook.com" in request.url:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"error": "Facebook URLs are not supported"}
+            )
+        
         # Fetch webpage content
         try:
             if request.use_playwright:
                 logger.debug("Using Playwright for content fetching")
                 content = await fetch_playwright_content(str(request.url))
+                logger.debug(f"Fetched content length: {len(content)}")
+                logger.debug(f"First 500 chars of content: {content[:500]}")
             else:
                 logger.debug("Using HTTP client for content fetching")
                 content = await fetch_http_content(str(request.url))
+                logger.debug(f"Fetched content length: {len(content)}")
+                logger.debug(f"First 500 chars of content: {content[:500]}")
         except FetchError as e:
-            logger.error(f"Failed to fetch content from {request.url}: {str(e)}")
+            logger.error(f"Failed to fetch content from {request.url}: {str(e)}", exc_info=True)
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={"error": "Failed to fetch content", "details": str(e)}
             )
-            
+        
         # Preprocess HTML content
         try:
             logger.debug("Pre-processing HTML content")
             processed_content = preprocess_html(content)
+            logger.debug(f"Processed content length: {len(processed_content)}")
+            logger.debug(f"First 500 chars of processed content: {processed_content[:500]}")
         except Exception as e:
-            logger.error(f"Failed to preprocess HTML: {str(e)}")
+            logger.error(f"Failed to preprocess HTML: {str(e)}", exc_info=True)
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content={"error": "Failed to process content", "details": str(e)}
             )
-            
+        
         # Extract event information using Gemini
         try:
             logger.debug("Extracting event information using Gemini")
@@ -105,28 +118,29 @@ async def scrape_website(request: ScrapeRequest, rate_limit: None = Depends(chec
             # Convert to response model
             response = ScrapeResponse(**event_info)
             logger.info("Successfully extracted event information")
+            logger.debug(f"Response data: {response.dict()}")
             return response
             
         except APIKeyError as e:
-            logger.error(f"API key error: {str(e)}")
+            logger.error(f"API key error: {str(e)}", exc_info=True)
             return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 content={"error": "Invalid API key", "details": str(e)}
             )
         except ContentFilterError as e:
-            logger.error(f"Content filtered: {str(e)}")
+            logger.error(f"Content filtered: {str(e)}", exc_info=True)
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 content={"error": "Content filtered", "details": str(e)}
             )
         except ResponseParsingError as e:
-            logger.error(f"Response parsing error: {str(e)}")
+            logger.error(f"Response parsing error: {str(e)}", exc_info=True)
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 content={"error": "Failed to parse response", "details": str(e)}
             )
         except LLMError as e:
-            logger.error(f"LLM error: {str(e)}")
+            logger.error(f"LLM error: {str(e)}", exc_info=True)
             return JSONResponse(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 content={"error": "LLM service error", "details": str(e)}
@@ -134,7 +148,7 @@ async def scrape_website(request: ScrapeRequest, rate_limit: None = Depends(chec
             
     except ValueError as e:
         # For validation errors
-        logger.warning(f"Validation error: {str(e)}")
+        logger.warning(f"Validation error: {str(e)}", exc_info=True)
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content={"error": "Validation error", "details": str(e)}
@@ -142,7 +156,7 @@ async def scrape_website(request: ScrapeRequest, rate_limit: None = Depends(chec
     except Exception as e:
         # For unexpected errors
         logger.error(f"Error processing scrape request: {str(e)}", exc_info=True)
-        raise HTTPException(
+        return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": "Internal server error", "details": str(e)}
+            content={"error": "Internal server error", "details": str(e)}
         ) 
