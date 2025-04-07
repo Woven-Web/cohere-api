@@ -6,8 +6,7 @@ import time
 import os
 from urllib.parse import urlparse
 import asyncio
-import playwright_aws_lambda
-from playwright_aws_lambda.utils import PlaywrightError
+from playwright.async_api import async_playwright, Error as PlaywrightError
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -250,152 +249,151 @@ async def fetch_playwright_content(
     
     for attempt in range(max_retries + 1):
         try:
-            browser = await playwright_aws_lambda.async_playwright()
-            
-            try:
-                # Basic context configuration
-                context = await browser.new_context(
-                    user_agent=user_agent or DEFAULT_HEADERS['User-Agent'],
-                    viewport=viewport or {'width': 1920, 'height': 1080},
-                    ignore_https_errors=ignore_https_errors,
-                    java_script_enabled=javascript_enabled,
-                    locale='en-US'
+            async with async_playwright() as p:
+                # Launch browser (using chromium for best compatibility)
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=['--no-sandbox']
                 )
                 
-                # Add common headers
-                await context.set_extra_http_headers(DEFAULT_HEADERS)
-                
-                page = await context.new_page()
-                page.set_default_navigation_timeout(timeout_ms)
-                page.set_default_timeout(timeout_ms)
-                
-                # Navigate to URL
-                logger.debug(f"Navigating to {url}")
-                response = await page.goto(url, wait_until=wait_until)
-                
-                if not response:
-                    raise FetchError(
-                        "Failed to get page response",
-                        url=url,
-                        details={'current_attempt': attempt + 1}
+                try:
+                    # Basic context configuration
+                    context = await browser.new_context(
+                        user_agent=user_agent or DEFAULT_HEADERS['User-Agent'],
+                        viewport=viewport or {'width': 1920, 'height': 1080},
+                        ignore_https_errors=ignore_https_errors,
+                        java_script_enabled=javascript_enabled,
+                        locale='en-US'
                     )
-                
-                if response.status >= 400:
-                    raise FetchError(
-                        "HTTP error response",
-                        url=url,
-                        status_code=response.status,
-                        details={'current_attempt': attempt + 1}
-                    )
-                
-                # Handle cookie consent if configured
-                if cookie_accept_selector:
-                    try:
-                        await page.click(cookie_accept_selector, timeout=5000)
-                        logger.debug("Accepted cookies")
-                    except Exception as e:
-                        logger.debug(f"No cookie banner found or unable to accept: {str(e)}")
-                
-                # Wait for load state
-                await page.wait_for_load_state(wait_until)
-                
-                # Check for blocked content first
-                if blocked_selectors:
-                    for selector in blocked_selectors:
-                        try:
-                            blocked_element = await page.wait_for_selector(selector, timeout=2000)
-                            if blocked_element:
-                                raise FetchError(
-                                    "Content access blocked",
-                                    error_type='BLOCKED',
-                                    url=url,
-                                    details={'blocked_by': selector}
-                                )
-                        except PlaywrightError:
-                            continue
-                
-                # Simplify selector checking to focus on what's missing
-                if wait_for_selectors:
-                    missing = []
-                    for selector in wait_for_selectors:
-                        try:
-                            await page.wait_for_selector(selector, timeout=timeout_ms)
-                        except Exception:
-                            missing.append(selector)
                     
-                    if missing:
+                    # Add common headers
+                    await context.set_extra_http_headers(DEFAULT_HEADERS)
+                    
+                    page = await context.new_page()
+                    page.set_default_navigation_timeout(timeout_ms)
+                    page.set_default_timeout(timeout_ms)
+                    
+                    # Navigate to URL
+                    logger.debug(f"Navigating to {url}")
+                    response = await page.goto(url, wait_until=wait_until)
+                    
+                    if not response:
                         raise FetchError(
-                            "Failed to find expected content",
+                            "Failed to get page response",
                             url=url,
-                            details={'missing_selectors': missing}
+                            details={'current_attempt': attempt + 1}
                         )
-                
-                # Handle dynamic content loading
-                if scroll_to_bottom:
-                    logger.debug("Scrolling page for dynamic content")
-                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                
-                if dynamic_wait_time > 0:
-                    logger.debug(f"Waiting {dynamic_wait_time}ms for dynamic content")
-                    await page.wait_for_timeout(dynamic_wait_time)
-                
-                # Verify required content is present
-                if required_selectors:
-                    missing_selectors = []
-                    for selector in required_selectors:
-                        try:
-                            await page.wait_for_selector(selector, timeout=5000)
-                        except Exception:
-                            missing_selectors.append(selector)
                     
-                    if missing_selectors:
+                    if response.status >= 400:
                         raise FetchError(
-                            "Required content not found",
-                            error_type='VALIDATION',
+                            "HTTP error response",
                             url=url,
-                            details={'missing_selectors': missing_selectors}
+                            status_code=response.status,
+                            details={'current_attempt': attempt + 1}
                         )
-                
-                # Check for error messages
-                if error_texts:
-                    for error_text in error_texts:
+                    
+                    # Handle cookie consent if configured
+                    if cookie_accept_selector:
                         try:
-                            error_element = await page.query_selector(f"text={error_text}")
-                            if error_element:
-                                raise FetchError(
-                                    f"Access error: {error_text}",
-                                    error_type='BLOCKED',
-                                    url=url,
-                                    details={'error_message': error_text}
-                                )
-                        except PlaywrightError:
-                            continue
-                
-                # Simplify content validation
-                content = await page.content()
-                if not content or len(content.strip()) < 100:
+                            await page.click(cookie_accept_selector, timeout=5000)
+                            logger.debug("Accepted cookies")
+                        except Exception as e:
+                            logger.debug(f"No cookie banner found or unable to accept: {str(e)}")
+                    
+                    # Wait for load state
+                    await page.wait_for_load_state(wait_until)
+                    
+                    # Check for blocked content first
+                    if blocked_selectors:
+                        for selector in blocked_selectors:
+                            try:
+                                blocked_element = await page.wait_for_selector(selector, timeout=2000)
+                                if blocked_element:
+                                    raise FetchError(
+                                        "Content access blocked",
+                                        error_type='BLOCKED',
+                                        url=url,
+                                        details={'blocked_by': selector}
+                                    )
+                            except PlaywrightError:
+                                continue
+                    
+                    # Simplify selector checking to focus on what's missing
+                    if wait_for_selectors:
+                        missing = []
+                        for selector in wait_for_selectors:
+                            try:
+                                await page.wait_for_selector(selector, timeout=timeout_ms)
+                            except Exception:
+                                missing.append(selector)
+                        
+                        if missing:
+                            raise FetchError(
+                                "Failed to find expected content",
+                                url=url,
+                                details={'missing_selectors': missing}
+                            )
+                    
+                    # Handle dynamic content loading
+                    if scroll_to_bottom:
+                        logger.debug("Scrolling page for dynamic content")
+                        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    
+                    if dynamic_wait_time > 0:
+                        logger.debug(f"Waiting {dynamic_wait_time}ms for dynamic content")
+                        await page.wait_for_timeout(dynamic_wait_time)
+                    
+                    # Verify required content is present
+                    if required_selectors:
+                        missing_selectors = []
+                        for selector in required_selectors:
+                            try:
+                                await page.wait_for_selector(selector, timeout=5000)
+                            except Exception:
+                                missing_selectors.append(selector)
+                        
+                        if missing_selectors:
+                            raise FetchError(
+                                "Required content not found",
+                                error_type='VALIDATION',
+                                url=url,
+                                details={'missing_selectors': missing_selectors}
+                            )
+                    
+                    # Check for error messages
+                    if error_texts:
+                        for error_text in error_texts:
+                            try:
+                                error_element = await page.query_selector(f"text={error_text}")
+                                if error_element:
+                                    raise FetchError(
+                                        f"Access error: {error_text}",
+                                        error_type='BLOCKED',
+                                        url=url,
+                                        details={'error_message': error_text}
+                                    )
+                            except PlaywrightError:
+                                continue
+                    
+                    # Simplify content validation
+                    content = await page.content()
+                    if not content or len(content.strip()) < 100:
+                        raise FetchError(
+                            "Retrieved content is too short or empty",
+                            url=url,
+                            details={'content_length': len(content) if content else 0}
+                        )
+                    
+                    return content
+                    
+                except PlaywrightError as e:
                     raise FetchError(
-                        "Retrieved content is too short or empty",
+                        f"Playwright error: {str(e)}",
+                        error_type='DYNAMIC',
                         url=url,
-                        details={'content_length': len(content) if content else 0}
+                        details={'playwright_error': str(e)}
                     )
                 
-                return content
-                
-            except PlaywrightError as e:
-                raise FetchError(
-                    f"Playwright error: {str(e)}",
-                    error_type='DYNAMIC',
-                    url=url,
-                    details={'playwright_error': str(e)}
-                )
-                
-            finally:
-                if 'context' in locals():
-                    await context.close()
-                if 'browser' in locals():
-                    await browser.close()
-                    
         except FetchError as e:
             if attempt < max_retries:
                 logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
@@ -406,7 +404,6 @@ async def fetch_playwright_content(
         except Exception as e:
             raise FetchError(
                 f"Unexpected error: {str(e)}",
-                error_type='DYNAMIC',
                 url=url,
                 details={'error': str(e)}
             ) 
