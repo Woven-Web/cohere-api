@@ -4,9 +4,17 @@ import time
 from typing import Optional, Dict, Any
 from playwright.async_api import async_playwright, Error as PlaywrightError
 import httpx
-from .exceptions import FetchError
 
 logger = logging.getLogger(__name__)
+
+class FetchError(Exception):
+    """Exception raised for errors in the content fetching process."""
+    def __init__(self, 
+                 message: str,
+                 details: Optional[Dict[str, Any]] = None):
+        self.message = message
+        self.details = details or {}
+        super().__init__(message)
 
 async def fetch_http_content(url: str) -> str:
     """
