@@ -6,8 +6,8 @@ import time
 import os
 from urllib.parse import urlparse
 import asyncio
-from playwright.async_api import Error as PlaywrightError
 import playwright_aws_lambda
+from playwright_aws_lambda.utils import PlaywrightError
 
 # Configure logger
 logger = logging.getLogger(__name__)
