@@ -184,8 +184,8 @@ async def fetch_http_content(
 
 async def fetch_playwright_content(
     url: str,
-    timeout_ms: int = 60000,  # Increased to 60 seconds
-    wait_until: str = "networkidle",
+    timeout_ms: int = 30000,  
+    wait_until: str = "load",  
     wait_for_selectors: Optional[List[str]] = None,
     max_retries: int = 2,
     retry_delay: int = 1,
@@ -199,8 +199,8 @@ async def fetch_playwright_content(
     
     Args:
         url: The URL to fetch content from
-        timeout_ms: Page load timeout in milliseconds (default: 60000)
-        wait_until: Page load state to wait for (default: networkidle)
+        timeout_ms: Page load timeout in milliseconds (default: 30000)
+        wait_until: Page load state to wait for (default: load)
         wait_for_selectors: List of CSS selectors to wait for (default: None)
         max_retries: Maximum number of retry attempts (default: 2)
         retry_delay: Delay between retries in seconds (default: 1)
