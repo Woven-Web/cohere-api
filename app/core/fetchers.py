@@ -6,7 +6,8 @@ import time
 import os
 from urllib.parse import urlparse
 import asyncio
-from playwright.async_api import async_playwright, Error as PlaywrightError
+from playwright.async_api import Error as PlaywrightError
+import playwright_aws_lambda
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -195,7 +196,7 @@ async def fetch_playwright_content(
     ignore_https_errors: bool = False
 ) -> str:
     """
-    Fetch HTML content from a URL using Playwright browser automation.
+    Fetch HTML content from a URL using Playwright browser automation (serverless version).
     
     Args:
         url: The URL to fetch content from
@@ -215,61 +216,60 @@ async def fetch_playwright_content(
     Raises:
         FetchError: If the page cannot be loaded or content cannot be extracted
     """
-    logger.info(f"Fetching content from {url} using Playwright")
+    logger.info(f"Fetching content from {url} using Playwright (serverless)")
     
     for attempt in range(max_retries + 1):
         try:
-            async with async_playwright() as p:
-                logger.debug(f"Launching headless browser (attempt {attempt + 1}/{max_retries + 1})")
-                browser = await p.chromium.launch(headless=True)
+            # Get the browser instance
+            browser = await playwright_aws_lambda.async_playwright()
+            
+            try:
+                context = await browser.new_context(
+                    user_agent=user_agent or DEFAULT_HEADERS['User-Agent'],
+                    viewport=viewport or {'width': 1920, 'height': 1080},
+                    ignore_https_errors=ignore_https_errors,
+                    java_script_enabled=javascript_enabled
+                )
                 
-                try:
-                    context = await browser.new_context(
-                        user_agent=user_agent or DEFAULT_HEADERS['User-Agent'],
-                        viewport=viewport or {'width': 1920, 'height': 1080},
-                        ignore_https_errors=ignore_https_errors,
-                        java_script_enabled=javascript_enabled
-                    )
-                    
-                    page = await context.new_page()
-                    
-                    # Set default navigation timeout
-                    page.set_default_navigation_timeout(timeout_ms)
-                    page.set_default_timeout(timeout_ms)
-                    
-                    # Navigate to the URL
-                    logger.debug(f"Navigating to {url}")
-                    await page.goto(url, wait_until=wait_until)
-                    
-                    # Wait for network to be idle
-                    logger.debug(f"Waiting for page load state: {wait_until}")
-                    await page.wait_for_load_state(wait_until)
-                    
-                    # Wait for any specified selectors
-                    if wait_for_selectors:
-                        for selector in wait_for_selectors:
-                            try:
-                                logger.debug(f"Waiting for selector: {selector}")
-                                await page.wait_for_selector(selector, timeout=timeout_ms)
-                            except PlaywrightError as e:
-                                logger.warning(f"Selector '{selector}' not found: {str(e)}")
-                    
-                    # Additional wait for dynamic content
-                    await asyncio.sleep(2)  # Short delay for any final dynamic updates
-                    
-                    # Extract HTML content
-                    logger.debug("Extracting HTML content")
-                    content = await page.content()
-                    
-                    # Verify we got meaningful content
-                    if not content or len(content.strip()) < 100:
-                        raise FetchError(f"Retrieved content too short from {url}")
-                    
-                    return content
-                    
-                finally:
-                    await browser.close()
-                    
+                page = await context.new_page()
+                
+                # Set default navigation timeout
+                page.set_default_navigation_timeout(timeout_ms)
+                page.set_default_timeout(timeout_ms)
+                
+                # Navigate to the URL
+                logger.debug(f"Navigating to {url}")
+                await page.goto(url, wait_until=wait_until)
+                
+                # Wait for network to be idle
+                logger.debug(f"Waiting for page load state: {wait_until}")
+                await page.wait_for_load_state(wait_until)
+                
+                # Wait for any specified selectors
+                if wait_for_selectors:
+                    for selector in wait_for_selectors:
+                        try:
+                            logger.debug(f"Waiting for selector: {selector}")
+                            await page.wait_for_selector(selector, timeout=timeout_ms)
+                        except PlaywrightError as e:
+                            logger.warning(f"Selector '{selector}' not found: {str(e)}")
+                
+                # Additional wait for dynamic content
+                await asyncio.sleep(2)  # Short delay for any final dynamic updates
+                
+                # Extract HTML content
+                logger.debug("Extracting HTML content")
+                content = await page.content()
+                
+                # Verify we got meaningful content
+                if not content or len(content.strip()) < 100:
+                    raise FetchError(f"Retrieved content too short from {url}")
+                
+                return content
+                
+            finally:
+                await browser.close()
+                
         except PlaywrightError as e:
             last_error = f"Playwright error: {str(e)}"
             logger.warning(f"Playwright error fetching {url}: {str(e)}")
