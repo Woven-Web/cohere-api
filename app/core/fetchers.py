@@ -22,36 +22,54 @@ DEFAULT_HEADERS = {
 class FetchError(Exception):
     """Exception raised for errors in the content fetching process."""
     
-    def __init__(self, message: str, status_code: Optional[int] = None, url: Optional[str] = None):
+    def __init__(self, 
+                 message: str,
+                 url: Optional[str] = None,
+                 status_code: Optional[int] = None,
+                 details: Optional[Dict[str, Any]] = None):
         self.message = message
-        self.status_code = status_code
         self.url = url
+        self.status_code = status_code
+        self.details = details or {}
+        self.timestamp = time.time()
         super().__init__(self.message)
-        
+    
     def __str__(self) -> str:
-        base_msg = self.message
-        if self.status_code:
-            base_msg = f"{base_msg} (Status: {self.status_code})"
+        """Format error message with relevant context."""
+        parts = [self.message]
+        
         if self.url:
-            base_msg = f"{base_msg} - URL: {self.url}"
-        return base_msg
+            parts.append(f"URL: {self.url}")
+        
+        if self.status_code:
+            status_message = get_error_message(self.status_code)
+            parts.append(f"Status {self.status_code}: {status_message}")
+        
+        if self.details:
+            # Only include details that help understand what went wrong
+            relevant_details = {
+                k: v for k, v in self.details.items() 
+                if k in {'current_attempt', 'missing_selectors', 'content_length', 'error_message'}
+            }
+            if relevant_details:
+                parts.append(f"Details: {relevant_details}")
+        
+        return " | ".join(parts)
 
 def get_error_message(status_code: int) -> str:
-    """Get a descriptive error message for common HTTP status codes."""
-    
-    status_messages = {
-        400: "Bad Request - The server could not understand the request",
-        401: "Unauthorized - Authentication is required",
-        403: "Forbidden - The server understood but refuses to authorize the request",
-        404: "Not Found - The requested resource could not be found",
-        429: "Too Many Requests - Rate limit exceeded",
-        500: "Internal Server Error - The server encountered an unexpected condition",
-        502: "Bad Gateway - The server received an invalid response from an upstream server",
-        503: "Service Unavailable - The server is temporarily unavailable",
-        504: "Gateway Timeout - The server did not receive a timely response",
+    """Get a descriptive error message for HTTP status codes."""
+    messages = {
+        400: "Bad request - check URL format and parameters",
+        401: "Authentication required",
+        403: "Access forbidden - site may be blocking access",
+        404: "Page not found",
+        429: "Too many requests - rate limited",
+        500: "Server error",
+        502: "Bad gateway - server error",
+        503: "Service unavailable",
+        504: "Gateway timeout"
     }
-    
-    return status_messages.get(status_code, f"HTTP Error {status_code}")
+    return messages.get(status_code, f"HTTP {status_code}")
 
 async def fetch_http_content(
     url: str, 
@@ -186,29 +204,41 @@ async def fetch_http_content(
 async def fetch_playwright_content(
     url: str,
     timeout_ms: int = 30000,  
-    wait_until: str = "load",  
+    wait_until: str = "networkidle",  # Default to networkidle for dynamic content
     wait_for_selectors: Optional[List[str]] = None,
     max_retries: int = 2,
     retry_delay: int = 1,
     user_agent: Optional[str] = None,
     viewport: Optional[Dict[str, int]] = None,
     javascript_enabled: bool = True,
-    ignore_https_errors: bool = False
+    ignore_https_errors: bool = False,
+    scroll_to_bottom: bool = False,
+    dynamic_wait_time: int = 5000,
+    required_selectors: Optional[List[str]] = None,
+    blocked_selectors: Optional[List[str]] = None,
+    error_texts: Optional[List[str]] = None,
+    cookie_accept_selector: Optional[str] = None
 ) -> str:
     """
-    Fetch HTML content from a URL using Playwright browser automation (serverless version).
+    Generic Playwright-based content fetcher with configurable behavior for dynamic websites.
     
     Args:
         url: The URL to fetch content from
-        timeout_ms: Page load timeout in milliseconds (default: 30000)
-        wait_until: Page load state to wait for (default: load)
-        wait_for_selectors: List of CSS selectors to wait for (default: None)
-        max_retries: Maximum number of retry attempts (default: 2)
-        retry_delay: Delay between retries in seconds (default: 1)
-        user_agent: Custom user agent string (default: None)
-        viewport: Custom viewport dimensions (default: None)
-        javascript_enabled: Whether to enable JavaScript (default: True)
-        ignore_https_errors: Whether to ignore HTTPS errors (default: False)
+        timeout_ms: Page load timeout in milliseconds
+        wait_until: Page load state to wait for (load, domcontentloaded, networkidle)
+        wait_for_selectors: List of CSS selectors to wait for
+        max_retries: Maximum number of retry attempts
+        retry_delay: Delay between retries in seconds
+        user_agent: Custom user agent string
+        viewport: Custom viewport dimensions
+        javascript_enabled: Whether to enable JavaScript
+        ignore_https_errors: Whether to ignore HTTPS errors
+        scroll_to_bottom: Whether to scroll to bottom for lazy-loaded content
+        dynamic_wait_time: Additional wait time for dynamic content in ms
+        required_selectors: List of selectors that must be present in the page
+        blocked_selectors: List of selectors that indicate blocked/login-required content
+        error_texts: List of error message texts to check for
+        cookie_accept_selector: Selector for cookie consent button
         
     Returns:
         The HTML content as a string
@@ -216,69 +246,167 @@ async def fetch_playwright_content(
     Raises:
         FetchError: If the page cannot be loaded or content cannot be extracted
     """
-    logger.info(f"Fetching content from {url} using Playwright (serverless)")
+    logger.info(f"Fetching content from {url} using Playwright")
     
     for attempt in range(max_retries + 1):
         try:
-            # Get the browser instance
             browser = await playwright_aws_lambda.async_playwright()
             
             try:
+                # Basic context configuration
                 context = await browser.new_context(
                     user_agent=user_agent or DEFAULT_HEADERS['User-Agent'],
                     viewport=viewport or {'width': 1920, 'height': 1080},
                     ignore_https_errors=ignore_https_errors,
-                    java_script_enabled=javascript_enabled
+                    java_script_enabled=javascript_enabled,
+                    locale='en-US'
                 )
                 
-                page = await context.new_page()
+                # Add common headers
+                await context.set_extra_http_headers(DEFAULT_HEADERS)
                 
-                # Set default navigation timeout
+                page = await context.new_page()
                 page.set_default_navigation_timeout(timeout_ms)
                 page.set_default_timeout(timeout_ms)
                 
-                # Navigate to the URL
+                # Navigate to URL
                 logger.debug(f"Navigating to {url}")
-                await page.goto(url, wait_until=wait_until)
+                response = await page.goto(url, wait_until=wait_until)
                 
-                # Wait for network to be idle
-                logger.debug(f"Waiting for page load state: {wait_until}")
+                if not response:
+                    raise FetchError(
+                        "Failed to get page response",
+                        url=url,
+                        details={'current_attempt': attempt + 1}
+                    )
+                
+                if response.status >= 400:
+                    raise FetchError(
+                        "HTTP error response",
+                        url=url,
+                        status_code=response.status,
+                        details={'current_attempt': attempt + 1}
+                    )
+                
+                # Handle cookie consent if configured
+                if cookie_accept_selector:
+                    try:
+                        await page.click(cookie_accept_selector, timeout=5000)
+                        logger.debug("Accepted cookies")
+                    except Exception as e:
+                        logger.debug(f"No cookie banner found or unable to accept: {str(e)}")
+                
+                # Wait for load state
                 await page.wait_for_load_state(wait_until)
                 
-                # Wait for any specified selectors
+                # Check for blocked content first
+                if blocked_selectors:
+                    for selector in blocked_selectors:
+                        try:
+                            blocked_element = await page.wait_for_selector(selector, timeout=2000)
+                            if blocked_element:
+                                raise FetchError(
+                                    "Content access blocked",
+                                    error_type='BLOCKED',
+                                    url=url,
+                                    details={'blocked_by': selector}
+                                )
+                        except PlaywrightError:
+                            continue
+                
+                # Simplify selector checking to focus on what's missing
                 if wait_for_selectors:
+                    missing = []
                     for selector in wait_for_selectors:
                         try:
-                            logger.debug(f"Waiting for selector: {selector}")
                             await page.wait_for_selector(selector, timeout=timeout_ms)
-                        except PlaywrightError as e:
-                            logger.warning(f"Selector '{selector}' not found: {str(e)}")
+                        except Exception:
+                            missing.append(selector)
+                    
+                    if missing:
+                        raise FetchError(
+                            "Failed to find expected content",
+                            url=url,
+                            details={'missing_selectors': missing}
+                        )
                 
-                # Additional wait for dynamic content
-                await asyncio.sleep(2)  # Short delay for any final dynamic updates
+                # Handle dynamic content loading
+                if scroll_to_bottom:
+                    logger.debug("Scrolling page for dynamic content")
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 
-                # Extract HTML content
-                logger.debug("Extracting HTML content")
+                if dynamic_wait_time > 0:
+                    logger.debug(f"Waiting {dynamic_wait_time}ms for dynamic content")
+                    await page.wait_for_timeout(dynamic_wait_time)
+                
+                # Verify required content is present
+                if required_selectors:
+                    missing_selectors = []
+                    for selector in required_selectors:
+                        try:
+                            await page.wait_for_selector(selector, timeout=5000)
+                        except Exception:
+                            missing_selectors.append(selector)
+                    
+                    if missing_selectors:
+                        raise FetchError(
+                            "Required content not found",
+                            error_type='VALIDATION',
+                            url=url,
+                            details={'missing_selectors': missing_selectors}
+                        )
+                
+                # Check for error messages
+                if error_texts:
+                    for error_text in error_texts:
+                        try:
+                            error_element = await page.query_selector(f"text={error_text}")
+                            if error_element:
+                                raise FetchError(
+                                    f"Access error: {error_text}",
+                                    error_type='BLOCKED',
+                                    url=url,
+                                    details={'error_message': error_text}
+                                )
+                        except PlaywrightError:
+                            continue
+                
+                # Simplify content validation
                 content = await page.content()
-                
-                # Verify we got meaningful content
                 if not content or len(content.strip()) < 100:
-                    raise FetchError(f"Retrieved content too short from {url}")
+                    raise FetchError(
+                        "Retrieved content is too short or empty",
+                        url=url,
+                        details={'content_length': len(content) if content else 0}
+                    )
                 
                 return content
                 
-            finally:
-                await browser.close()
+            except PlaywrightError as e:
+                raise FetchError(
+                    f"Playwright error: {str(e)}",
+                    error_type='DYNAMIC',
+                    url=url,
+                    details={'playwright_error': str(e)}
+                )
                 
-        except PlaywrightError as e:
-            last_error = f"Playwright error: {str(e)}"
-            logger.warning(f"Playwright error fetching {url}: {str(e)}")
+            finally:
+                if 'context' in locals():
+                    await context.close()
+                if 'browser' in locals():
+                    await browser.close()
+                    
+        except FetchError as e:
+            if attempt < max_retries:
+                logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
+                await asyncio.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                continue
+            raise
             
         except Exception as e:
-            last_error = f"Unexpected error: {str(e)}"
-            logger.error(f"Error fetching {url}: {str(e)}", exc_info=True)
-        
-        if attempt < max_retries:
-            await asyncio.sleep(retry_delay)
-        else:
-            raise FetchError(f"Failed to fetch {url} after {max_retries + 1} attempts: {last_error}", url=url) 
+            raise FetchError(
+                f"Unexpected error: {str(e)}",
+                error_type='DYNAMIC',
+                url=url,
+                details={'error': str(e)}
+            ) 
