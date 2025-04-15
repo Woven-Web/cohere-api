@@ -295,19 +295,42 @@ async def extract_event_info(
             # Try to parse the JSON
             try:
                 result = json.loads(text)
-                logger.debug(f"Successfully parsed JSON on first attempt: {result}")
-            except json.JSONDecodeError as first_error:
-                logger.warning(f"First JSON parse attempt failed: {str(first_error)}")
-                # If that fails, try to fix quotes and parse again
-                text = re.sub(r'(?<!\\)"', '\\"', text)  # Escape unescaped quotes
-                text = re.sub(r'^\{(.*)\}$', r'{"title": null, "description": null, "start_datetime": null, "end_datetime": null, "location": null}', text)
-                logger.debug(f"Text after quote escaping: {text}")
-                try:
-                    result = json.loads(text)
-                    logger.debug(f"Successfully parsed JSON on second attempt: {result}")
-                except json.JSONDecodeError as second_error:
-                    logger.error(f"Second JSON parse attempt failed: {str(second_error)}")
-                    raise
+                logger.debug(f"Successfully parsed JSON: {result}")
+                
+                # Ensure the result is a dictionary
+                if not isinstance(result, dict):
+                    # If it's a list with one dictionary, use that
+                    if isinstance(result, list) and len(result) == 1 and isinstance(result[0], dict):
+                        result = result[0]
+                        logger.warning("Parsed JSON was a list containing one dictionary. Using the dictionary.")
+                    else:
+                        raise ResponseParsingError(
+                            f"Expected a JSON object, but got type {type(result).__name__}",
+                            details={
+                                'model_name': 'gemini-2.0-flash-lite',
+                                'temperature': temperature,
+                                'response_text': text,
+                                'parsed_type': type(result).__name__,
+                                'prompt': prompt
+                            }
+                        )
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse Gemini API response as JSON: {str(e)}")
+                logger.error(f"Response text before parsing: {text}")
+                # Directly raise the error if the first parse attempt fails
+                raise ResponseParsingError(
+                    f"Failed to parse response as JSON: {str(e)}",
+                    details={
+                        'model_name': 'gemini-2.0-flash-lite',
+                        'temperature': temperature,
+                        'response_text': text,
+                        'error_type': 'JSONDecodeError',
+                        'json_error_position': e.pos,
+                        'json_error_message': e.msg,
+                        'prompt': prompt
+                    },
+                    original_error=e
+                )
             
             # Validate and clean up fields
             required_fields = ["title", "description", "start_datetime", "end_datetime", "location"]
@@ -353,7 +376,9 @@ async def extract_event_info(
     except Exception as e:
         if isinstance(e, (APIKeyError, ContentFilterError, ResponseParsingError, LLMError)):
             raise
-        logger.error(f"Error during event extraction: {str(e)}", exc_info=True)
+        import traceback
+        tb_str = traceback.format_exc()
+        logger.error(f"Unexpected error during event extraction: {str(e)}\nTraceback:\n{tb_str}")
         raise LLMError(
             f"Error during event extraction: {str(e)}",
             details={
