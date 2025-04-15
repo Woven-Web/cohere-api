@@ -2,6 +2,7 @@ import logging
 from bs4 import BeautifulSoup, Comment
 import html2text
 import markdownify
+import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +89,16 @@ def preprocess_html(
         if len(markdown_content) > max_length:
             logger.warning(f"Truncating content from {len(markdown_content)} to {max_length} characters")
             markdown_content = markdown_content[:max_length] + "... [Content truncated]"
+
+        # Add contextual notes
+        current_year = datetime.datetime.now().year
+        year_note = f"Context Note: If no year is listed for dates/times below, assume the current year ({current_year})."
+        timezone_note = "Context Note: If no timezone is specified or easily inferrable from the location, assume Mountain Time (MT)."
+        
+        final_content = f"{year_note}\n{timezone_note}\n\n---\n\n{markdown_content}"
             
-        logger.info(f"Preprocessing completed. Output length: {len(markdown_content)}")
-        return markdown_content
+        logger.info(f"HTML preprocessing completed. Output length: {len(final_content)}")
+        return final_content
 
     except Exception as e:
         logger.error(f"Error during HTML preprocessing: {str(e)}", exc_info=True)
