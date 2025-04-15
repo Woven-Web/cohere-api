@@ -68,7 +68,7 @@ async def scrape_website(request: ScrapeRequest, rate_limit: None = Depends(chec
         logger.info(f"Processing scrape request for URL: {request.url}")
         
         # Check if this is a Facebook URL - we don't support those
-        if "facebook.com" in request.url:
+        if "facebook.com" in str(request.url):
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={"error": "Facebook URLs are not supported"}
